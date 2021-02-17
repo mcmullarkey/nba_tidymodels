@@ -1,0 +1,375 @@
+---
+title: "NBA with Tidymodels"
+author: "Michael Mullarkey"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 5
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+geometry: margin=0.50in
+---
+
+```{r setup, include=FALSE, cache = FALSE}
+require("knitr")
+## setting working directory
+opts_knit$set(root.dir = "/Users/Carbonite/Documents/Github_R/nba_tidymodels") ## Will need to change across computers
+knitr::opts_chunk$set(echo = TRUE, tidy = TRUE, warning = FALSE, message = FALSE, include = FALSE)
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+
+## Create vector of packages we need for these analyses
+
+packages <- c("tidymodels","readr","broom.mixed","rstanarm","tidyverse")
+
+## Now write function to load each of these packages: Under construction
+
+# map(packages,~{
+#   .x <- enquo(.x)
+#   if(!require(.x)){install.packages(.x)}
+# library(.x)
+# })
+
+if(!require(tidymodels)){install.packages('tidymodels')}
+library(tidymodels)
+if(!require(readr)){install.packages('readr')}
+library(readr)
+if(!require(broom.mixed)){install.packages('broom.mixed')}
+library(broom.mixed)
+if(!require(tidyverse)){install.packages('tidyverse')}
+library(tidyverse)
+if(!require(nycflights13)){install.packages('nycflights13')}
+library(nycflights13)
+if(!require(skimr)){install.packages('skimr')}
+library(skimr)
+if(!require(modeldata)){install.packages('modeldata')}
+library(modeldata)
+if(!require(ranger)){install.packages('ranger')}
+library(ranger)
+if(!require(vip)){install.packages('vip')}
+library(vip)
+if(!require(gt)){install.packages('gt')}
+library(gt)
+if(!require(ggthemes)){install.packages('ggthemes')}
+library(ggthemes)
+if(!require(xgboost)){install.packages('xgboost')}
+library(xgboost)
+if(!require(keras)){install.packages('keras')}
+library(keras)
+if(!require(furrr)){install.packages('furrr')}
+library(furrr)
+if(!require(kernlab)){install.packages('kernlab')}
+library(kernlab)
+if(!require(mlbench)){install.packages('mlbench')}
+library(mlbench)
+if(!require(scales)){install.packages('scales')}
+library(scales)
+if(!require(tidyposterior)){install.packages('tidyposterior')}
+library(tidyposterior)
+if(!require(rstanarm)){install.packages('rstanarm')}
+library(rstanarm)
+if(!require(tictoc)){install.packages('tictoc')}
+library(tictoc)
+# library(devtools)
+# devtools::install_github("abresler/nbastatR")
+library(nbastatR)
+if(!require(heatmaply)){install.packages('heatmaply')}
+library(heatmaply)
+if(!require(ggmosaic)){install.packages('ggmosaic')}
+library(ggmosaic)
+if(!require(splines)){install.packages('splines')}
+library(splines)
+if(!require(doMC)){install.packages('doMC')}
+library(doMC)
+if(!require(glue)){install.packages('glue')}
+library(glue)
+if(!require(stacks)){install.packages('stacks')}
+library(stacks)
+if(!require(future)){install.packages('future')}
+library(future)
+if(!require(janitor)){install.packages('janitor')}
+library(janitor)
+if(!require(future)){install.packages('future')}
+library(future)
+if(!require(reticulate)){install.packages('reticulate')}
+library(reticulate)
+if(!require(tensorflow)){install.packages('tensorflow')}
+library(tensorflow)
+if(!require(furrr)){install.packages('furrr')}
+library(furrr)
+if(!require(GGally)){install.packages('GGally')}
+library(GGally)
+
+packages <- c("ggplot2", "dplyr", "lavaan", "plyr", "cowplot", "rmarkdown", 
+              "readr", "caTools", "bitops", "heatmaply")
+
+if (length(setdiff(packages, rownames(installed.packages()))) > 0) {
+  install.packages(setdiff(packages, rownames(installed.packages())))  
+}
+
+```
+
+```{r setting up cores}
+
+## Let's set our number of cores for this document
+
+registerDoMC(cores = 7)
+
+```
+
+```{r reading in the data for one season}
+
+tic()
+plan(multisession)
+all_bref_stats <- bref_players_stats(seasons = 2000:2019, tables = c("advanced", "totals"), widen = TRUE, assign_to_environment = FALSE)
+toc()
+
+```
+
+```{r}
+
+glimpse(all_bref_stats)
+
+all_bref_stats_clean_names <- all_bref_stats %>% 
+  clean_names()
+
+glimpse(all_bref_stats_clean_names)
+
+```
+
+```{r}
+
+
+bref_ts_2018 <- all_bref_stats_clean_names %>% 
+  filter(year_season == 2018) %>% 
+  dplyr::select(next_season_ts = pct_true_shooting, slug_player_bref)
+
+bref_all_stats_2017_2018 <- all_bref_stats_clean_names %>% 
+  filter(year_season == 2017) %>% 
+  left_join(bref_ts_2018, by = "slug_player_bref")
+
+glimpse(bref_all_stats_2017_2018)
+  
+
+```
+
+```{r}
+
+## Getting summary statistics, comparing the mean and standard deviation I'm guessing the distributions are really right-skewed
+
+bref_all_stats_2017_2018 %>% 
+  dplyr::select(fg3a_totals, fg2a_totals, fta_totals) %>% 
+  summarise(across(
+    everything(),
+    .fns = list(mean = mean, sd = sd)))
+
+## Setting up for mapping over ggplot for histogram
+
+for_hist_plotting <- bref_all_stats_2017_2018 %>% 
+  dplyr::select(fg3a_totals, fg2a_totals, fta_totals) %>% 
+  names()
+
+## Mapping across ggplot histogram
+
+map(for_hist_plotting, ~{
+  
+  bref_all_stats_2017_2018 %>% 
+    ggplot(aes(x = .data[[.x]])) +
+    geom_density(alpha = 0.2)
+  
+})
+
+## Looking at the median which we'll use as a cutoff
+
+bref_all_stats_2017_2018 %>% 
+  dplyr::select(fg3a_totals, fg2a_totals, fta_totals) %>% 
+  summarise(across(
+    everything(),
+    .fns = list(median = median)))
+  
+
+```
+
+```{r}
+
+## Filtering down to high volume shooters
+
+bref_all_stats_2017_2018_high_volume <- bref_all_stats_2017_2018 %>% 
+  filter(fg2a_totals >= 114 & fta_totals >= 38)
+
+## Filtering out players without an outcome the following season
+
+bref_all_stats_2017_2018_complete <- bref_all_stats_2017_2018_high_volume %>% 
+  filter(!is.na(next_season_ts)) %>% 
+  print()
+
+```
+
+```{r}
+
+## Split into training and testing data
+set.seed(33)
+live_code_nba_initial_split <- initial_split(bref_all_stats_2017_2018_complete, prop =3/4, strata = next_season_ts)
+
+nba_train <- training(live_code_nba_initial_split)
+
+nba_test <- testing(live_code_nba_initial_split)
+
+```
+
+```{r}
+
+## Scatterplot of true shooting percentage the following season with true shooting percentage this season on the x-axis
+
+nba_train %>% 
+  na.omit() %>% 
+  ggplot(aes(x = pct_true_shooting, y = next_season_ts)) +
+  geom_point(alpha = 0.2, position = "jitter") +
+  geom_text(aes(label=ifelse(next_season_ts > .67 | next_season_ts < 0.40,as.character(name_player), '')))
+  
+
+```
+
+```{r}
+
+## Setting up for mapping over ggplot for histogram
+
+for_hist_plotting <- nba_train %>% 
+  dplyr::select(is.numeric, -year_season, -id_player_nba) %>% 
+  names()
+
+## Mapping across ggplot histogram
+
+map(for_hist_plotting, ~{
+  
+  nba_train %>% 
+    ggplot(aes(x = .data[[.x]])) +
+    geom_density(alpha = 0.2)
+  
+})
+
+## Looks like we should do some Box Cox transformations of the numeric predictors
+
+```
+
+```{r}
+
+## Looking at correlations between numeric predictors and outcome
+
+# Do it once
+
+nba_train %>% 
+  ggplot(aes(x = pct_true_shooting, y =  next_season_ts)) +
+  geom_point(alpha = 0.2, position = "jitter") +
+  geom_smooth(method = lm, formula = y ~ x, se = FALSE, col = "red") +
+  labs(y = "True Shooting Percentage Next Season")
+
+# Write a function
+
+for_cor_plotting <- nba_train %>% 
+  dplyr::select(is.numeric, -year_season, -id_player_nba) %>% 
+  names()
+
+map(for_cor_plotting, ~{
+  
+  nba_train %>% 
+  ggplot(aes(x = .data[[.x]], y =  next_season_ts)) +
+  geom_point(alpha = 0.2, position = "jitter") +
+  geom_smooth(method = lm, formula = y ~ x, se = FALSE, col = "red") +
+  labs(y = "True Shooting Percentage Next Season")
+  
+})
+
+```
+
+```{r}
+
+## looking at correlations between predictors
+
+cor_mat <- nba_train %>% 
+  dplyr::select(is.numeric, -year_season, -id_player_nba, -count_teams_player_season, -count_teams_player_season_totals, next_season_ts) %>%
+  cor()
+
+cor_map <-
+  heatmaply_cor(
+    cor_mat,
+    symm = TRUE,
+    cexRow = .0001,
+    cexCol = .0001,
+    branches_lwd = .1
+  )
+cor_map
+
+## Should we do a pca dimension reduction? Maybe!
+
+```
+
+
+```{r}
+
+## Creating preprocessing recipe
+
+nba_train <- nba_train %>%
+  mutate(across(
+    is.character,
+    as.factor
+  ))
+
+nba_ts_recipe <- 
+  recipe(next_season_ts ~ ., data = nba_train) %>% 
+  update_role(name_player, new_role = "id_variable") %>% 
+  step_rm(contains("slug"), contains("url")) %>%
+  step_dummy(all_nominal(), -has_role("id_variable")) %>% 
+  step_knnimpute(all_numeric(),-all_outcomes()) %>% 
+  step_normalize(all_numeric(), -all_outcomes()) %>% 
+  step_BoxCox(all_numeric(), -all_outcomes()) %>% 
+  step_nzv(all_predictors(), -all_outcomes()) %>% 
+  step_pca(all_numeric(), -all_outcomes(), threshold = 0.99)
+
+summary(nba_ts_recipe)
+
+## Creating model
+
+lm_mod <- linear_reg() %>% 
+  set_engine("lm")
+
+## Put model and recipe into a workflow
+
+nba_ts_wf <-
+  workflow() %>% 
+  add_model(lm_mod) %>% 
+  add_recipe(nba_ts_recipe)
+
+
+```
+
+```{r}
+
+set.seed(33)
+folds_nba_ts <- vfold_cv(nba_train, v = 10, repeats = 5, strata = next_season_ts)
+
+keep_pred <- control_resamples(save_pred = T)
+
+tic()
+set.seed(33)
+nba_ts_rs <-
+  nba_ts_wf %>% 
+  fit_resamples(folds_nba_ts, control = keep_pred)
+toc()
+
+nba_ts_rs %>% 
+  collect_metrics(summarize = T)
+
+```
+
+
