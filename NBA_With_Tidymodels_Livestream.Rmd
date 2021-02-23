@@ -136,16 +136,332 @@ toc()
 
 ```
 
-```{r}
+```{r cleaning up twenty years of NBA data}
 
 glimpse(all_bref_stats)
 
 all_bref_stats_clean_names <- all_bref_stats %>% 
-  clean_names()
+  janitor::clean_names()
 
 glimpse(all_bref_stats_clean_names)
 
 ```
+
+```{r starting to calculate next season true shooting percentage}
+
+## First we need to figure out how many true shooting attempts
+
+all_bref_stats_clean_names_with_true_shot_attempts <- all_bref_stats_clean_names %>% 
+  mutate(true_shot_attempts = fga_totals + fta_totals)
+
+all_bref_stats_clean_names_with_true_shot_attempts %>% 
+  group_by(slug_season) %>% 
+  summarise(mean_true_shot_attempts = mean(true_shot_attempts, na.rm = T))
+
+all_bref_stats_clean_names_with_true_shot_attempts %>% 
+  group_by(slug_season) %>% 
+  summarise(median_true_shot_attempts = median(true_shot_attempts, na.rm = T))
+
+all_bref_stats_clean_names_with_true_shot_attempts %>% 
+  na.omit() %>% 
+  ggplot(aes(x = true_shot_attempts)) +
+  labs(x = "Number of True Shot Attempts") +
+  geom_histogram(alpha = 0.7)
+
+```
+
+```{r how many true shot attempts are needed before true shooting percentage stabilizes}
+
+all_bref_stats_clean_names_with_true_shot_attempts %>% 
+  na.omit() %>% 
+  ggplot(aes(x = true_shot_attempts, y = pct_true_shooting)) +
+  geom_point(alpha = 0.2, position = "jitter") +
+  geom_vline(xintercept = 200, color = "red")
+
+## Let's see how many folks would stay in the data if we kept it to seasons with at least 500/200 true shot attempts
+
+all_bref_stats_high_volume <- all_bref_stats_clean_names_with_true_shot_attempts %>% 
+  filter(true_shot_attempts >= 200)
+
+glimpse(all_bref_stats_high_volume)
+
+```
+
+```{r creating functions to put back to back seasons together into one dataframe}
+
+## Do it once first
+
+all_stats_2016 <- all_bref_stats_high_volume %>% 
+  filter(year_season == 2017) %>% 
+  print()
+
+true_shooting_2017 <- all_bref_stats_high_volume %>% 
+  filter(year_season == 2018) %>% 
+  dplyr::select(slug_player_bref, ts_next_season = pct_true_shooting) %>% 
+  print()
+
+predicting_2017_ts_with_2016 <- all_stats_2016 %>% 
+  left_join(true_shooting_2017, by = "slug_player_bref") %>% 
+  print()
+
+## Ok, writing a function, what variables would I need to input to do this programmatically
+
+create_next_season_ts_df <- function(.data, year_1, year_2){
+  
+  all_stats_first_year <- .data %>% 
+  filter(year_season == {{year_1}})
+
+true_shooting_next_year <- .data %>% 
+  filter(year_season == {{year_2}}) %>% 
+  dplyr::select(slug_player_bref, ts_next_season = pct_true_shooting)
+
+predicting_next_year_ts_with_previous_year <- all_stats_first_year %>% 
+  left_join(true_shooting_next_year, by = "slug_player_bref")
+  
+}
+
+test_df <- all_bref_stats_high_volume %>% 
+  create_next_season_ts_df(year_1 = 2017, year_2 = 2018) %>%
+  print()
+
+## Let's test that the non-function version and the function version are the same
+
+diffdf::diffdf(predicting_2017_ts_with_2016, test_df)
+
+```
+
+```{r using map function to create dataframes}
+
+## Create year ones and year twos
+
+year_ones <- all_bref_stats_high_volume %>% 
+  dplyr::select(year_season) %>% 
+  distinct() %>% 
+  slice(-20) %>% 
+  deframe()
+
+year_twos <- all_bref_stats_high_volume %>% 
+  dplyr::select(year_season) %>% 
+  distinct() %>% 
+  slice(-1) %>% 
+  deframe()
+
+all_seasons_predictive_df <- map2_dfr(.x = year_ones,.y = year_twos, ~{
+  
+  all_bref_stats_high_volume %>% 
+  create_next_season_ts_df(year_1 = .x, year_2 = .y) 
+  
+})
+
+all_seasons_predictive_df %>% 
+  group_by(slug_season) %>% 
+  tally()
+
+```
+```{r looking at missing data in our outcome variable}
+
+all_seasons_predictive_df_drop_nas <- all_seasons_predictive_df %>% 
+  filter(!is.na(ts_next_season))
+
+all_seasons_predictive_df_drop_nas %>% 
+  tally()
+
+```
+```{r creating scatter plot of outcome variable}
+
+all_seasons_predictive_df_drop_nas %>% 
+  ggplot(aes(x = pct_true_shooting, y = ts_next_season)) +
+  geom_point(alpha = 0.2, position = "jitter") +
+  geom_text(aes(label=ifelse(ts_next_season > 0.70 | ts_next_season < 0.35, as.character(name_player),'')), size = 2.5, nudge_x = 0.01, nudge_y = 0.01, check_overlap = F)
+
+```
+```{r splitting into training and testing sets}
+
+set.seed(33)
+nba_data_split <- initial_split(all_seasons_predictive_df_drop_nas, prop = 4/5, strata = ts_next_season)
+
+train_nba_data <- training(nba_data_split)
+test_nba_data <- testing(nba_data_split)
+
+```
+
+```{r}
+
+nba_ts_predictors <- train_nba_data %>% 
+  dplyr::select(is.numeric, -ts_next_season) %>% 
+  names()
+
+map(nba_ts_predictors, ~{
+  
+  train_nba_data %>% 
+    ggplot(aes(x = .data[[.x]])) +
+    geom_density(alpha = 0.2)
+  
+})
+
+## We'll need to Box-Cox transformation because a lot of the predictor variables aren't symmetrical
+
+```
+
+```{r plotting correlations between predictors and outcome}
+
+map(nba_ts_predictors, ~{
+  
+  train_nba_data %>% 
+    ggplot(aes(x = .data[[.x]], y = ts_next_season)) +
+    geom_point(alpha = 0.2, postion = "jitter") +
+    geom_smooth(method = lm, formula = y ~ x, se = FALSE, col = "red") +
+    labs(y = "True Shooting Percentage Next Season")
+  
+})
+
+```
+
+```{r}
+
+## Creating preprocessing recipe
+
+train_nba_data_updated <- train_nba_data %>%
+  mutate(across(
+    is.character,
+    as.factor
+  )) %>% 
+  dplyr::select(-slug_player_season,-slug_player_bref,-slug_teams_bref) %>% 
+  mutate(year_season = as.factor(year_season))
+
+train_nba_data %>% 
+  dplyr::select(contains("slug")) %>% 
+  print()
+
+glimpse(train_nba_data_updated)
+
+nba_ts_recipe <- 
+  recipe(ts_next_season ~ ., data = train_nba_data_updated) %>% 
+  update_role(name_player, new_role = "id_variable") %>% 
+  step_rm(contains("slug"), contains("url")) %>%
+  step_dummy(all_nominal(), -has_role("id_variable")) %>% 
+  step_knnimpute(all_numeric(),-all_outcomes()) %>% 
+  step_normalize(all_numeric(), -all_outcomes()) %>% 
+  step_BoxCox(all_numeric(), -all_outcomes()) %>% 
+  step_nzv(all_predictors(), -all_outcomes()) #%>% 
+  #step_pca(all_numeric(), -all_outcomes(), threshold = 0.95)
+
+summary(nba_ts_recipe)
+
+## Creating model
+
+el_net_mod <- linear_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine("glmnet")
+
+## Put model and recipe into a workflow
+
+nba_ts_wf <-
+  workflow() %>% 
+  add_model(el_net_mod) %>% 
+  add_recipe(nba_ts_recipe)
+
+## Double checking our tuning parameters
+
+el_net_set <- parameters(nba_ts_wf)
+
+```
+
+```{r}
+
+set.seed(33)
+folds_nba_ts <- vfold_cv(train_nba_data_updated, v = 5, repeats = 5, strata = ts_next_season)
+
+keep_pred <- control_resamples(save_pred = T)
+
+tic()
+set.seed(33)
+nba_ts_rs <-
+  nba_ts_wf %>% 
+  tune_bayes(
+    resamples = folds_nba_ts,
+    param_info = el_net_set,
+    initial = 5,
+    iter = 20,
+    metrics = metric_set(rmse),
+    control = control_bayes(no_improve = 5, verbose = TRUE)
+  )
+toc()
+
+```
+
+```{r}
+
+best_el_net_hyp <- nba_ts_rs %>% 
+  select_best("rmse")
+
+final_el_net_nba_ts_wf <-
+  nba_ts_wf %>% 
+  finalize_workflow(best_el_net_hyp)
+
+tic()
+set.seed(33)
+el_net_fit_rs_final <-
+  final_el_net_nba_ts_wf %>% 
+  fit_resamples(folds_nba_ts, control = keep_pred)
+toc()
+
+el_net_fit_rs_final %>% 
+  collect_metrics(summarize = T)
+
+collected_predictions <- collect_predictions(el_net_fit_rs_final, summarize = TRUE)
+
+```
+
+```{r seeing who the best and worst predictions are for}
+
+biggest_misses_el_net <- collected_predictions %>% 
+  mutate(residual = ts_next_season - .pred) %>% 
+  arrange(desc(abs(residual))) %>% 
+  slice(1:10) %>% 
+  dplyr::select(ts_next_season, .pred, residual, .row)
+
+train_nba_data_updated %>% 
+  slice(row = biggest_misses_el_net$.row) %>% 
+  dplyr::select(name_player) %>% 
+  bind_cols(biggest_misses_el_net) %>% 
+  dplyr::select(-.row)
+
+most_accurate_el_net <- collected_predictions %>% 
+  mutate(residual = ts_next_season - .pred) %>% 
+  arrange(abs(residual)) %>% 
+  slice(1:10) %>% 
+  dplyr::select(ts_next_season, .pred, residual, .row)
+
+train_nba_data_updated %>% 
+  slice(row = most_accurate_el_net$.row) %>% 
+  dplyr::select(name_player) %>% 
+  bind_cols(most_accurate_el_net) %>% 
+  dplyr::select(-.row)
+
+```
+
+
+
+```{r}
+
+predicting_2017_ts_with_2016 %>% 
+  dplyr::select(pct_true_shooting, ts_next_season) %>% 
+  tally()
+
+predicting_2017_ts_with_2016 %>% 
+  filter(is.na(ts_next_season)) %>% 
+  tally()
+
+
+```
+
+
+
+
+
+
+
+
 
 ```{r}
 
@@ -162,6 +478,7 @@ glimpse(bref_all_stats_2017_2018)
   
 
 ```
+
 
 ```{r}
 
