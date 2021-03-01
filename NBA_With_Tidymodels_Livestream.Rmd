@@ -15,16 +15,10 @@ geometry: margin=0.50in
 ```{r setup, include=FALSE, cache = FALSE}
 require("knitr")
 ## setting working directory
-opts_knit$set(root.dir = "/Users/Carbonite/Documents/Github_R/nba_tidymodels") ## Will need to change across computers
+opts_knit$set(root.dir = "/nba_tidymodels") ## Will need to change across computers
 knitr::opts_chunk$set(echo = TRUE, tidy = TRUE, warning = FALSE, message = FALSE, include = FALSE)
 
 ```
-
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
 ```{r}
 
@@ -275,10 +269,71 @@ all_seasons_predictive_df_drop_nas %>%
   geom_text(aes(label=ifelse(ts_next_season > 0.70 | ts_next_season < 0.35, as.character(name_player),'')), size = 2.5, nudge_x = 0.01, nudge_y = 0.01, check_overlap = F)
 
 ```
+```{r feature engineering}
+
+glimpse(all_seasons_predictive_df_drop_nas)
+
+# all_in_one_vars_non_tidy <- c(all_seasons_predictive_df_drop_nas$ratio_per, all_seasons_predictive_df_drop_nas$ratio_bpm, all_seasons_predictive_df_drop_nas$ratio_ws, all_seasons_predictive_df_drop_nas$ratio_ws)
+# 
+# temp_p_max <- pmax(all_in_one_vars_non_tidy)
+# length(temp_p_max)
+# 
+# nrow(all_seasons_predictive_df_drop_nas)*4
+# 
+# temp_max <- max(all_in_one_vars_non_tidy)
+# length(temp_max)
+# 
+# nrow(all_seasons_predictive_df_drop_nas)*4
+
+```
+
+```{r}
+
+## Code trying to create a max all in one stat feature, not currently working, have tried tunneling in the vars argument, but even if that's not used (for example, in current code) the function does not run. Might be worth checking up on the different types of rowwise syntax to see if I'm messing up something relatively straightforward
+
+# all_in_one_vars <- c("ratio_per", "ratio_bpm", "ratio_ws", "ratio_ws")
+# 
+# create_max_all_in_one_stat <- function(.data, vars){
+#   
+#   .data <- .data %>% 
+#     dplyr::select(contains("fga")) %>% 
+#     rowwise() %>% 
+#     mutate(c_across(everything(), ~pmax(.x)))
+#            max_all_in_one_stat = case_when(
+# 
+#            max_all_in_one_stat_value == ratio_per  ~ "ratio_per",
+#            max_all_in_one_stat_value == ratio_bpm  ~ "ratio_bpm",
+#            max_all_in_one_stat_value == ratio_vorp  ~ "ratio_vorp",
+#            max_all_in_one_stat_value == ratio_ws  ~ "ratio_ws"
+# 
+# 
+# 
+#          ))
+#   
+# }
+
+all_seasons_predictive_df_drop_nas_feat_engin <- all_seasons_predictive_df_drop_nas %>% 
+  mutate(ft_rate_fg2a = fta_totals/fg2a_totals,
+         ft_rate_fg3a = fta_totals/fg3a_totals,
+         ft_make_fg2a = ftm_totals/fg2a_totals,
+         ft_make_fg3a = ftm_totals/fg3a_totals,
+         ft_rate_fg2m = fta_totals/fg2m_totals,
+         ft_rate_fg3m = fta_totals/fg3m_totals,
+         ft_make_fg2m = ftm_totals/fg2m_totals,
+         ft_make_fg3m = ftm_totals/fg3m_totals,
+         pct_ts_usg = pct_true_shooting * pct_usg,
+         pct_ts_usg_ratio = pct_true_shooting/pct_usg,
+         above_average_shooter = factor(if_else(pct_true_shooting > 0.55, "Yes", "No")))
+
+glimpse(all_seasons_predictive_df_drop_nas_feat_engin)
+
+```
+
+
 ```{r splitting into training and testing sets}
 
 set.seed(33)
-nba_data_split <- initial_split(all_seasons_predictive_df_drop_nas, prop = 4/5, strata = ts_next_season)
+nba_data_split <- initial_split(all_seasons_predictive_df_drop_nas_feat_engin, prop = 4/5, strata = ts_next_season)
 
 train_nba_data <- training(nba_data_split)
 test_nba_data <- testing(nba_data_split)
@@ -364,6 +419,19 @@ nba_ts_wf <-
 
 el_net_set <- parameters(nba_ts_wf)
 
+## Let's create a baseline model to compare against
+
+## Create linear reg model
+
+linear_reg_mod <- linear_reg() %>% 
+  set_engine("lm")
+
+nba_ts_baseline_wf <-
+  workflow() %>% 
+  add_model(linear_reg_mod) %>% 
+  add_formula(ts_next_season ~ pct_true_shooting)
+
+
 ```
 
 ```{r}
@@ -411,7 +479,6 @@ el_net_fit_rs_final %>%
 collected_predictions <- collect_predictions(el_net_fit_rs_final, summarize = TRUE)
 
 ```
-
 ```{r seeing who the best and worst predictions are for}
 
 biggest_misses_el_net <- collected_predictions %>% 
@@ -439,6 +506,62 @@ train_nba_data_updated %>%
   dplyr::select(-.row)
 
 ```
+
+```{r}
+
+collected_predictions %>% 
+  ggplot(aes(x = .pred, y = ts_next_season)) +
+  geom_point(alpha = 0.2, position = "jitter")
+
+```
+```{r running a baseline model to compare against}
+
+tic()
+set.seed(33)
+baseline_mod_fit_rs_final <-
+  nba_ts_baseline_wf %>% 
+  fit_resamples(folds_nba_ts, control = keep_pred)
+toc()
+
+baseline_mod_fit_rs_final %>% 
+  collect_metrics(summarize = T)
+
+collected_predictions <- collect_predictions(baseline_mod_fit_rs_final, summarize = TRUE)
+
+```
+
+```{r}
+
+## A difference on the scale of 0.14%, so if you were that much better on average across each of the players on your team, how much better would you be at forecasting your team's point total?
+
+train_nba_data_updated %>% 
+  summarise(median = median(true_shot_attempts))
+
+## Across the median number of shots, how many would we expect an average shooter to make?
+
+745 * 0.55
+
+## Let's say we knew that our players could make the % more that we can predict based on this data
+
+745 * 0.564
+
+## How many points is that across players on a team?
+
+10 * 12 * 2
+
+## How many points is that per game
+
+240/82
+
+```
+
+
+
+
+
+
+
+
 
 
 
