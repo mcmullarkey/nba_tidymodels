@@ -109,6 +109,8 @@ if(!require(tabnet)){install.packages('tabnet')}
 library(tabnet)
 if(!require(finetune)){install.packages('finetune')}
 library(finetune)
+if(!require(embed)){install.packages('embed')}
+library(embed)
 
 
 packages <- c("ggplot2", "dplyr", "lavaan", "plyr", "cowplot", "rmarkdown", 
@@ -269,6 +271,7 @@ all_seasons_predictive_df_drop_nas %>%
   tally()
 
 ```
+
 ```{r creating scatter plot of outcome variable}
 
 all_seasons_predictive_df_drop_nas %>% 
@@ -277,6 +280,7 @@ all_seasons_predictive_df_drop_nas %>%
   geom_text(aes(label=ifelse(ts_next_season > 0.70 | ts_next_season < 0.35, as.character(name_player),'')), size = 2.5, nudge_x = 0.01, nudge_y = 0.01, check_overlap = F)
 
 ```
+
 ```{r feature engineering}
 
 glimpse(all_seasons_predictive_df_drop_nas)
@@ -487,6 +491,8 @@ el_net_fit_rs_final %>%
 collected_predictions <- collect_predictions(el_net_fit_rs_final, summarize = TRUE)
 
 ```
+
+
 ```{r seeing who the best and worst predictions are for}
 
 biggest_misses_el_net <- collected_predictions %>% 
@@ -572,7 +578,7 @@ torch_tensor(1)
 set.seed(33)
 torch_manual_seed(33)
 
-tabnet_mod <- tabnet(epochs = 50) %>% 
+tabnet_mod <- tabnet(epochs = 100) %>% 
   set_engine("torch", verbose = TRUE) %>% 
   set_mode("regression")
 
@@ -629,16 +635,54 @@ preds %>%
 
 ```{r observation level feature importance ie player level feature importance}
 
-ex_fit <- tabnet_explain(fit$fit, train_nba_data_updated)
+## Under construction
 
-ex_fit$M_explain %>%
-  mutate(observation = row_number()) %>%
-  pivot_longer(-observation, names_to = "variable", values_to = "m_agg") %>%
-  ggplot(aes(x = observation, y = variable, fill = m_agg)) +
-  geom_tile() +
-  theme_minimal() + 
-  scale_fill_viridis_c()
+# ex_fit <- tabnet_explain(fit$fit, train_nba_data_updated)
+# 
+# ex_fit$M_explain %>%
+#   mutate(observation = row_number()) %>%
+#   pivot_longer(-observation, names_to = "variable", values_to = "m_agg") %>%
+#   ggplot(aes(x = observation, y = variable, fill = m_agg)) +
+#   geom_tile() +
+#   theme_minimal() + 
+#   scale_fill_viridis_c()
 
+
+```
+```{r what if we just do a supervised umap recipe instead}
+
+rec_nba_ts_umap <- recipe(ts_next_season ~ ., data = train_nba_data_updated) %>% 
+  update_role(name_player, new_role = "id_variable") %>% 
+  step_rm(contains("slug"), contains("url")) %>%
+  step_dummy(all_nominal(), -has_role("id_variable")) %>% 
+  step_knnimpute(all_numeric(),-all_outcomes()) %>% 
+  step_normalize(all_numeric(), -all_outcomes()) %>% 
+  step_BoxCox(all_numeric(), -all_outcomes()) %>% 
+  step_nzv(all_predictors(), -all_outcomes()) %>% 
+  step_umap(all_predictors(), outcome = vars(ts_next_season), num_comp = tune())
+
+rf_mod <- rand_forest() %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("regression")
+
+nba_ts_umap_wf <-
+  workflow() %>% 
+  add_model(rf_mod) %>% 
+  add_recipe(rec_nba_ts_umap)
+
+tic()
+set.seed(33)
+rf_umap_fit_rs_final <-
+  nba_ts_umap_wf %>% 
+  fit_resamples(folds_nba_ts, control = keep_pred)
+toc()
+
+rf_umap_fit_rs_final$.notes
+
+rf_umap_fit_rs_final %>% 
+  collect_metrics(summarize = T)
+
+collected_predictions <- collect_predictions(rf_umap_fit_rs_final, summarize = TRUE)
 
 ```
 
