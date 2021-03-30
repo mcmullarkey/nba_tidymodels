@@ -578,7 +578,7 @@ torch_tensor(1)
 set.seed(33)
 torch_manual_seed(33)
 
-tabnet_mod <- tabnet(epochs = 100) %>% 
+tabnet_mod <- tabnet(epochs = 30) %>% 
   set_engine("torch", verbose = TRUE) %>% 
   set_mode("regression")
 
@@ -603,13 +603,19 @@ preds <- train_nba_data_updated %>%
 
 yardstick::rmse(preds, truth = ts_next_season, .pred)
 
+## Can look into this code for doing cross-validation with tabnet (will start at ~the correct time) https://youtu.be/GuboAGHDgas?t=2904
+
 ```
+
+
 ```{r variable level feature importance}
 
 fit <- pull_workflow_fit(fitted_model)
 vip(fit) + theme_minimal()
 
 ```
+
+
 ```{r biggest misses and most accurate predictions for the neural network tabnet}
 
 biggest_misses_nnet <- preds %>% 
