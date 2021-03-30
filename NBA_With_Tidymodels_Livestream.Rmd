@@ -654,12 +654,16 @@ preds %>%
 rec_nba_ts_umap <- recipe(ts_next_season ~ ., data = train_nba_data_updated) %>% 
   update_role(name_player, new_role = "id_variable") %>% 
   step_rm(contains("slug"), contains("url")) %>%
-  step_dummy(all_nominal(), -has_role("id_variable")) %>% 
-  step_knnimpute(all_numeric(),-all_outcomes()) %>% 
-  step_normalize(all_numeric(), -all_outcomes()) %>% 
+  step_feature_hash(all_nominal(), -has_role("id_variable"), num_hash = 15) %>% 
+  step_knnimpute(all_predictors(),-all_outcomes()) %>% 
+  step_normalize(all_predictors(), -all_outcomes()) %>% 
   step_BoxCox(all_numeric(), -all_outcomes()) %>% 
   step_nzv(all_predictors(), -all_outcomes()) %>% 
-  step_umap(all_predictors(), outcome = vars(ts_next_season), num_comp = tune())
+  step_umap(all_predictors(), outcome = vars(ts_next_season), num_comp = 20)
+
+# Ahh, it looks like I have to have tensor_flow loaded in order to do hashing and/or umap (I think the hashing?)
+
+rec_nba_ts_umap %>% prep %>% juice()
 
 rf_mod <- rand_forest() %>% 
   set_engine("ranger", importance = "impurity") %>% 
