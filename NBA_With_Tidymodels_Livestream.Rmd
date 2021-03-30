@@ -103,6 +103,13 @@ if(!require(furrr)){install.packages('furrr')}
 library(furrr)
 if(!require(GGally)){install.packages('GGally')}
 library(GGally)
+if(!require(torch)){install.packages('torch')}
+library(torch)
+if(!require(tabnet)){install.packages('tabnet')}
+library(tabnet)
+if(!require(finetune)){install.packages('finetune')}
+library(finetune)
+
 
 packages <- c("ggplot2", "dplyr", "lavaan", "plyr", "cowplot", "rmarkdown", 
               "readr", "caTools", "bitops", "heatmaply")
@@ -175,7 +182,8 @@ all_bref_stats_clean_names_with_true_shot_attempts %>%
 ## Let's see how many folks would stay in the data if we kept it to seasons with at least 500/200 true shot attempts
 
 all_bref_stats_high_volume <- all_bref_stats_clean_names_with_true_shot_attempts %>% 
-  filter(true_shot_attempts >= 200)
+  filter(true_shot_attempts >= 200) %>% 
+  print()
 
 glimpse(all_bref_stats_high_volume)
 
@@ -554,6 +562,105 @@ train_nba_data_updated %>%
 240/82
 
 ```
+
+```{r testing tabnet to see if we can improve our predictions}
+
+## Tabnet tutorial https://blogs.rstudio.com/ai/posts/2021-02-11-tabnet/
+
+torch_tensor(1)
+
+set.seed(33)
+torch_manual_seed(33)
+
+tabnet_mod <- tabnet(epochs = 50) %>% 
+  set_engine("torch", verbose = TRUE) %>% 
+  set_mode("regression")
+
+nnet_wf <- workflow() %>% 
+  add_model(tabnet_mod) %>% 
+  add_recipe(nba_ts_recipe)
+
+tic()
+fitted_model <- nnet_wf %>% 
+  fit(train_nba_data_updated)
+toc()
+
+
+```
+
+
+```{r getting fitted model}
+
+preds <- train_nba_data_updated %>% 
+  dplyr::select(ts_next_season, name_player) %>% 
+  bind_cols(predict(fitted_model, train_nba_data_updated))
+
+yardstick::rmse(preds, truth = ts_next_season, .pred)
+
+```
+```{r variable level feature importance}
+
+fit <- pull_workflow_fit(fitted_model)
+vip(fit) + theme_minimal()
+
+```
+```{r biggest misses and most accurate predictions for the neural network tabnet}
+
+biggest_misses_nnet <- preds %>% 
+  mutate(residual = ts_next_season - .pred) %>% 
+  arrange(desc(abs(residual))) %>% 
+  slice(1:10) %>% 
+  dplyr::select(name_player, ts_next_season, .pred, residual) %>% 
+  print()
+
+most_accurate_nnet <- preds %>% 
+  mutate(residual = ts_next_season - .pred) %>% 
+  arrange(abs(residual)) %>% 
+  slice(1:10) %>% 
+  dplyr::select(name_player, ts_next_season, .pred, residual) %>% 
+  print()
+
+preds %>% 
+  filter(name_player == "Speedy Claxton") %>% 
+  mutate(residual = ts_next_season - .pred)
+
+```
+
+
+```{r observation level feature importance ie player level feature importance}
+
+ex_fit <- tabnet_explain(fit$fit, train_nba_data_updated)
+
+ex_fit$M_explain %>%
+  mutate(observation = row_number()) %>%
+  pivot_longer(-observation, names_to = "variable", values_to = "m_agg") %>%
+  ggplot(aes(x = observation, y = variable, fill = m_agg)) +
+  geom_tile() +
+  theme_minimal() + 
+  scale_fill_viridis_c()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
