@@ -148,6 +148,8 @@ all_bref_stats_clean_names <- all_bref_stats %>%
 
 glimpse(all_bref_stats_clean_names)
 
+skim(all_bref_stats_clean_names)
+
 ```
 
 ```{r starting to calculate next season true shooting percentage}
